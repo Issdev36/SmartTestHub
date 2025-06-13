@@ -1,0 +1,4 @@
+run_types = ["Tests"]
+ignore = ["tests/*"]
+output_dir = "logs/coverage"
+timeout = 60

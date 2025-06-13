@@ -1,0 +1,24 @@
+services:
+  evm:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: evm-container
+    working_dir: /app
+    volumes:
+      - ./evm:/app
+      - ./shared_logs/evm:/app/logs
+    command: /bin/bash
+    tty: true         # Keeps the container alive
+    stdin_open: true  # Allows interactive terminal use
+
+  non-evm:
+    build:
+      context: ./non-evm
+    container_name: non-evm-container
+    working_dir: /app
+    entrypoint: ["/app/entrypoint.sh"]
+    volumes:
+      - ./non-evm:/app
+      - ./shared_logs/non-evm:/app/logs
+    tty: true         # Keeps the container alive
+    stdin_open: true  # Allows interactive terminal use
+

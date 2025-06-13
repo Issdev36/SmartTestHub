@@ -1,0 +1,9 @@
+[programs.localnet]
+my_program = "target/deploy/my_program.so"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[registry]
+url = "https://anchor.projectserum.com"

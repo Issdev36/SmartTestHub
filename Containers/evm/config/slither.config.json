@@ -1,0 +1,9 @@
+{
+  "solc-remaps": [],
+  "exclude": ["test/"],
+  "exclude-dirs": ["node_modules"],
+  "paths": ["contracts/"],
+  "fail-fast": false,
+  "filter-paths": true
+}
+

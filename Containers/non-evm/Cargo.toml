@@ -1,0 +1,16 @@
+[package]
+name = "placeholder_contract"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+solana-program = "1.18.3"
+
+[lib]
+name = "placeholder_contract"
+path = "src/lib.rs"
+crate-type = ["cdylib", "lib"]
+
+[features]
+no-entrypoint = []
+

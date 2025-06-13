@@ -1,0 +1,6 @@
+[settings]
+verbose = true
+output = "logs/xray-report.json"
+
+[analysis]
+enable_all = true
