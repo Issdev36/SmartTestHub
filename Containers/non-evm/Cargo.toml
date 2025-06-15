@@ -2,9 +2,40 @@
 name = "placeholder_contract"
 version = "0.1.0"
 edition = "2021"
+authors = ["SmartTestHub"]
+description = "Placeholder Solana smart contract for testing"
+license = "MIT"
+repository = "https://github.com/your-org/smart-test-hub"
+keywords = ["solana", "blockchain", "smart-contract"]
+categories = ["cryptography::cryptocurrencies"]
 
 [dependencies]
+# Core Solana dependencies
 solana-program = "1.18.3"
+solana-sdk = "1.18.3"
+borsh = { version = "0.10.3", features = ["derive"] }
+thiserror = "1.0"
+
+# Anchor dependencies (optional, for Anchor projects)
+anchor-lang = { version = "0.29.0", optional = true }
+anchor-spl = { version = "0.29.0", optional = true }
+
+# Additional utility crates
+spl-token = { version = "4.0", features = ["no-entrypoint"] }
+spl-associated-token-account = { version = "2.3", features = ["no-entrypoint"] }
+arrayref = "0.3.7"
+num-derive = "0.4"
+num-traits = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+# Testing dependencies
+solana-program-test = "1.18.3"
+solana-banks-client = "1.18.3"
+tokio = { version = "1.0", features = ["full"] }
+assert_matches = "1.5"
+proptest = "1.0"
 
 [lib]
 name = "placeholder_contract"
@@ -12,5 +43,27 @@ path = "src/lib.rs"
 crate-type = ["cdylib", "lib"]
 
 [features]
+default = []
 no-entrypoint = []
+anchor = ["anchor-lang", "anchor-spl"]
+test-sbf = []
 
+# Metadata for documentation
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+# Cargo configuration
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.release.build-override]
+opt-level = 3
+incremental = false
+codegen-units = 1
+
+[workspace]
+resolver = "2"
