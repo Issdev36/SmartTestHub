@@ -14,6 +14,12 @@ services:
     restart: unless-stopped
     environment:
       - NODE_ENV=development
+      - COINMARKETCAP_API_KEY=${COINMARKETCAP_API_KEY}
+      - ALCHEMY_API_KEY=${ALCHEMY_API_KEY}
+      - ETHERSCAN_API_KEY=${ETHERSCAN_API_KEY}
+      - REPORT_GAS=true
+    env_file:
+      - .env
 
   non-evm:
     build:
@@ -29,3 +35,6 @@ services:
     restart: unless-stopped
     environment:
       - RUST_LOG=debug
+      - SOLANA_URL=https://api.devnet.solana.com
+    env_file:
+      - .env
