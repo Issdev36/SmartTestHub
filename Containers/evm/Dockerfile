@@ -25,6 +25,11 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install
 
+# Install additional security and analysis tools
+RUN npm install -g @openzeppelin/hardhat-upgrades \
+    hardhat-contract-sizer hardhat-docgen hardhat-storage-layout \
+    @ethereum/security-analysis || echo "Some packages may not be available"
+
 # Copy all application files
 COPY . .
 
@@ -32,9 +37,14 @@ COPY . .
 RUN dos2unix ./entrypoint.sh && chmod +x ./entrypoint.sh
 
 # Create required directories that backend will use
-RUN mkdir -p /app/input /app/logs /app/contracts /app/test
+RUN mkdir -p /app/input /app/logs /app/contracts /app/test \
+    /app/logs/slither /app/logs/coverage /app/logs/gas /app/logs/foundry \
+    /app/logs/reports /app/cache /app/artifacts
 
 # Initialize Foundry project structure
 RUN forge init --force || true
+
+# Set proper permissions
+RUN chmod -R 755 /app/logs /app/input /app/contracts /app/test
 
 ENTRYPOINT ["./entrypoint.sh"]
