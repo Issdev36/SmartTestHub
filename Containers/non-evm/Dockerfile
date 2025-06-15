@@ -42,6 +42,9 @@ RUN mkdir -p /app/src /app/tests /app/config /app/input /app/logs \
 COPY config /app/config
 COPY entrypoint.sh /app/entrypoint.sh
 RUN dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+# Create a startup wrapper script that will handle permissions at runtime
+RUN echo '#!/bin/bash\nchmod +x /app/entrypoint.sh\nexec /app/entrypoint.sh "$@"' > /docker-entrypoint.sh \
+    && chmod +x /docker-entrypoint.sh
 
 # Create initial Cargo.toml
 COPY Cargo.toml /app/Cargo.toml
@@ -51,4 +54,5 @@ COPY src /app/src
 RUN chmod -R 755 /app/logs /app/input /app/config && \
     chmod 644 /app/config/*.toml
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+# Use the wrapper script as entrypoint
+ENTRYPOINT ["/docker-entrypoint.sh"]
