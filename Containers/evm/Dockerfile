@@ -1,22 +1,24 @@
 FROM ghcr.io/foundry-rs/foundry:latest
 
 # Install Node.js and system dependencies
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
     bash \
     git \
     curl \
-    build-base \
+    build-essential \
     libffi-dev \
-    openssl-dev \
+    libssl-dev \
     python3 \
-    py3-pip \
+    python3-pip \
     dos2unix \
     inotify-tools \
     nodejs \
-    npm
+    npm \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
 # Install Slither for security analysis
-RUN pip install slither-analyzer
+RUN pip3 install slither-analyzer
 
 # Set working directory
 WORKDIR /app
