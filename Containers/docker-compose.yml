@@ -1,14 +1,19 @@
 services:
   evm:
-    image: ghcr.io/foundry-rs/foundry:latest
+    build:
+      context: ./evm
+      dockerfile: Dockerfile
     container_name: evm-container
     working_dir: /app
     volumes:
       - ./evm:/app
       - ./shared_logs/evm:/app/logs
-    command: /bin/bash
+    command: /bin/bash -c "/app/entrypoint.sh"
     tty: true         # Keeps the container alive
     stdin_open: true  # Allows interactive terminal use
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=development
 
   non-evm:
     build:
@@ -21,4 +26,6 @@ services:
       - ./shared_logs/non-evm:/app/logs
     tty: true         # Keeps the container alive
     stdin_open: true  # Allows interactive terminal use
-
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=debug
