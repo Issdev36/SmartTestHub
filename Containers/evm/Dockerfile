@@ -1,6 +1,9 @@
 FROM ghcr.io/foundry-rs/foundry:latest
 
-# Install Node.js and system dependencies
+# Set the user to root explicitly
+USER root
+
+# Install Node.js and system dependencies (no sudo needed)
 RUN apt-get update && apt-get install -y \
     bash \
     git \
@@ -16,6 +19,7 @@ RUN apt-get update && apt-get install -y \
     npm \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
+
 
 # Install Slither for security analysis
 RUN pip3 install slither-analyzer
