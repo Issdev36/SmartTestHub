@@ -13,24 +13,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Solana CLI
 RUN curl --proto '=https' --tlsv1.2 -sSfL https://release.solana.com/stable/install | sh
 
-# Install AVM (Anchor Version Manager) and Anchor CLI
-RUN cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
-RUN avm install 0.29.0 && avm use 0.29.0
+# Install AVM (Anchor Version Manager) and Anchor CLI with error handling
+RUN cargo install --git https://github.com/coral-xyz/anchor avm --locked --force || \
+    echo "AVM installation failed, will try alternative method"
 
-# Alternative method: Install Anchor CLI directly via Cargo (uncomment if AVM method fails)
-# RUN cargo install --git https://github.com/coral-xyz/anchor anchor-cli --locked --force
+# Try to install and use Anchor via AVM, fallback to direct cargo install
+RUN (avm install 0.29.0 && avm use 0.29.0) || \
+    (echo "AVM failed, installing Anchor CLI directly via cargo..." && \
+     cargo install --git https://github.com/coral-xyz/anchor anchor-cli --locked --force)
 
-# Install other Rust tools
+# Install other Rust tools for comprehensive testing
 RUN cargo install cargo-tarpaulin cargo-audit cargo-deny cargo-outdated && \
     rustup component add clippy
 
 # Create workdir and test file structure
 WORKDIR /app
-RUN mkdir -p /app/src /app/tests /app/config
+RUN mkdir -p /app/src /app/tests /app/config /app/input /app/logs
 
-# Copy config and entrypoint
+# Copy config files
 COPY config /app/config
 COPY entrypoint.sh /app/entrypoint.sh
 RUN dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
+# Create initial Cargo.toml
+COPY Cargo.toml /app/Cargo.toml
+COPY src /app/src
 
 ENTRYPOINT ["/app/entrypoint.sh"]
