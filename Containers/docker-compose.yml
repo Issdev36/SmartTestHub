@@ -1,4 +1,4 @@
-version: '3.8'  # Adding explicit version
+version: '3.8'
 
 services:
   evm:
@@ -10,7 +10,7 @@ services:
     volumes:
       - ./evm:/app
       - ./shared_logs/evm:/app/logs
-    command: bash -c "chmod +x /app/entrypoint.sh && /app/entrypoint.sh"
+    # No command specified - using the entrypoint from Dockerfile
     tty: true
     stdin_open: true
     restart: unless-stopped
@@ -26,10 +26,10 @@ services:
   non-evm:
     build:
       context: ./non-evm
-      dockerfile: Dockerfile  # Explicitly specify Dockerfile
+      dockerfile: Dockerfile
     container_name: non-evm-container
     working_dir: /app
-    command: bash -c "chmod +x /app/entrypoint.sh && /app/entrypoint.sh"
+    # No command specified - using the entrypoint from Dockerfile
     volumes:
       - ./non-evm:/app
       - ./shared_logs/non-evm:/app/logs
