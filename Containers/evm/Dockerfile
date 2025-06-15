@@ -1,6 +1,6 @@
-FROM node:18-alpine
+FROM ghcr.io/foundry-rs/foundry:latest
 
-# Install essential system packages
+# Install Node.js and system dependencies
 RUN apk add --no-cache \
     bash \
     git \
@@ -11,30 +11,30 @@ RUN apk add --no-cache \
     python3 \
     py3-pip \
     dos2unix \
-    inotify-tools  # for watching files with inotifywait
+    inotify-tools \
+    nodejs \
+    npm
 
-# Install chokidar-cli globally (optional if not using it)
-RUN npm install -g chokidar-cli
-
-# Install Slither
+# Install Slither for security analysis
 RUN pip install slither-analyzer
 
 # Set working directory
 WORKDIR /app
 
-# Copy package.json and install dependencies
+# Copy package.json and install Node.js dependencies
 COPY package.json package-lock.json* ./
 RUN npm install
 
-# Copy all files (including watcher logic and configs)
+# Copy all application files
 COPY . .
 
 # Fix script permissions and line endings
-RUN dos2unix /entrypoint.sh && chmod +x /entrypoint.sh
+RUN dos2unix ./entrypoint.sh && chmod +x ./entrypoint.sh
 
-# Create directory where backend will drop files (if it doesn't exist)
-RUN mkdir -p /app/input
+# Create required directories that backend will use
+RUN mkdir -p /app/input /app/logs /app/contracts /app/test
 
-# Entrypoint will handle watching and testing
-ENTRYPOINT ["/entrypoint.sh"]
+# Initialize Foundry project structure
+RUN forge init --force || true
 
+ENTRYPOINT ["./entrypoint.sh"]
