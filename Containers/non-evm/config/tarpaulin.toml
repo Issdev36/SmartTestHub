@@ -1,4 +1,77 @@
-run_types = ["Tests"]
-ignore = ["tests/*"]
+[settings]
+# Coverage types to run
+run_types = ["Tests", "Doctests"]
+
+# Directories to ignore
+ignore = [
+    "tests/*",
+    "examples/*",
+    "benches/*", 
+    "target/*",
+    "*/tests/*",
+    "*/examples/*"
+]
+
+# Files to exclude from coverage
+exclude = [
+    "*/mod.rs",
+    "*/main.rs",
+    "*/bin/*"
+]
+
+# Output settings
 output_dir = "logs/coverage"
-timeout = 60
+target_dir = "target/tarpaulin"
+
+# Timeout in seconds
+timeout = 120
+
+# Exclude lines containing these patterns
+exclude_lines = [
+    "#\\[cfg\\(test\\)\\]",
+    "unreachable!",
+    "unimplemented!",
+    "panic!",
+    "todo!",
+    "debug_assert",
+    "#\\[derive\\(",
+    "Err\\(.*\\) => panic!",
+]
+
+# Output formats
+out = ["Html", "Json", "Xml", "Lcov"]
+
+# Additional options
+no_fail_fast = true
+skip_clean = false
+all_features = true
+workspace = false
+verbose = true
+color = "auto"
+debug = false
+dump_traces = false
+frozen = false
+locked = false
+offline = false
+avoid_cfg_tarpaulin = false
+implicit_test_threads = false
+fail_under = 70.0  # Minimum coverage percentage
+branch = true
+count = true
+line = true
+ignore_panics = false
+ignore_config = false
+include_tests = false
+run_ignored = false
+release = false
+all_targets = true
+lib = true
+bins = true
+examples = false
+tests = true
+benches = false
+doc = false
+no_default_features = false
+ciserver = "github"
+coveralls = ""
+report_uri = ""
