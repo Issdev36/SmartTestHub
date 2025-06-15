@@ -20,7 +20,6 @@ RUN apt-get update && apt-get install -y \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-
 # Install Slither for security analysis
 RUN pip3 install slither-analyzer
 
@@ -39,8 +38,11 @@ RUN npm install -g @openzeppelin/hardhat-upgrades \
 # Copy all application files
 COPY . .
 
-# Fix script permissions and line endings
+# Fix script permissions and line endings and create a startup script
 RUN dos2unix ./entrypoint.sh && chmod +x ./entrypoint.sh
+# Create a startup wrapper script that will handle permissions at runtime
+RUN echo '#!/bin/bash\nchmod +x /app/entrypoint.sh\nexec /app/entrypoint.sh "$@"' > /docker-entrypoint.sh \
+    && chmod +x /docker-entrypoint.sh
 
 # Create required directories that backend will use
 RUN mkdir -p /app/input /app/logs /app/contracts /app/test \
@@ -57,4 +59,5 @@ RUN chmod -R 755 /app/logs /app/input /app/contracts /app/test
 ENV NODE_ENV=development
 ENV REPORT_GAS=true
 
-ENTRYPOINT ["./entrypoint.sh"]
+# Use the wrapper script as entrypoint
+ENTRYPOINT ["/docker-entrypoint.sh"]
