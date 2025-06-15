@@ -22,13 +22,21 @@ RUN (avm install 0.29.0 && avm use 0.29.0) || \
     (echo "AVM failed, installing Anchor CLI directly via cargo..." && \
      cargo install --git https://github.com/coral-xyz/anchor anchor-cli --locked --force)
 
-# Install other Rust tools for comprehensive testing
-RUN cargo install cargo-tarpaulin cargo-audit cargo-deny cargo-outdated && \
+# Install comprehensive Rust tools for testing and analysis
+RUN cargo install cargo-tarpaulin cargo-audit cargo-deny cargo-outdated \
+    cargo-license cargo-tree cargo-udeps cargo-unused-features cargo-machete \
+    --locked && \
     rustup component add clippy
 
-# Create workdir and test file structure
+# Install wasm-pack for WebAssembly builds if needed
+RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh || \
+    echo "wasm-pack installation failed, continuing..."
+
+# Create workdir and comprehensive directory structure
 WORKDIR /app
-RUN mkdir -p /app/src /app/tests /app/config /app/input /app/logs
+RUN mkdir -p /app/src /app/tests /app/config /app/input /app/logs \
+    /app/logs/coverage /app/logs/security /app/logs/analysis /app/logs/reports \
+    /app/target /app/.cargo
 
 # Copy config files
 COPY config /app/config
@@ -38,5 +46,9 @@ RUN dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 # Create initial Cargo.toml
 COPY Cargo.toml /app/Cargo.toml
 COPY src /app/src
+
+# Set proper permissions
+RUN chmod -R 755 /app/logs /app/input /app/config && \
+    chmod 644 /app/config/*.toml
 
 ENTRYPOINT ["/app/entrypoint.sh"]
