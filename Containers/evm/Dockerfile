@@ -49,4 +49,8 @@ RUN forge init --force || true
 # Set proper permissions
 RUN chmod -R 755 /app/logs /app/input /app/contracts /app/test
 
+# Add environment variable loading
+ENV NODE_ENV=development
+ENV REPORT_GAS=true
+
 ENTRYPOINT ["./entrypoint.sh"]
