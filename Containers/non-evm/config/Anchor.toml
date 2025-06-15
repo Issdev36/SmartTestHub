@@ -1,9 +1,27 @@
-[programs.localnet]
-my_program = "target/deploy/my_program.so"
+[features]
+seed = false
+skip-lint = false
 
-[provider]
-cluster = "localnet"
-wallet = "~/.config/solana/id.json"
+[programs.localnet]
+placeholder_contract = "target/deploy/placeholder_contract.so"
 
 [registry]
-url = "https://anchor.projectserum.com"
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+
+[test]
+startup_wait = 5000
+shutdown_wait = 2000
+upgrade_wait = 1000
+
+[test.validator]
+url = "https://api.devnet.solana.com"
+clone = []
+account = []
+ledger = ""
