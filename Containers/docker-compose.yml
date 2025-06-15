@@ -1,3 +1,5 @@
+version: '3.8'  # Adding explicit version
+
 services:
   evm:
     build:
@@ -8,9 +10,9 @@ services:
     volumes:
       - ./evm:/app
       - ./shared_logs/evm:/app/logs
-    command: /bin/bash -c "/app/entrypoint.sh"
-    tty: true         # Keeps the container alive
-    stdin_open: true  # Allows interactive terminal use
+    command: bash -c "chmod +x /app/entrypoint.sh && /app/entrypoint.sh"
+    tty: true
+    stdin_open: true
     restart: unless-stopped
     environment:
       - NODE_ENV=development
@@ -24,14 +26,15 @@ services:
   non-evm:
     build:
       context: ./non-evm
+      dockerfile: Dockerfile  # Explicitly specify Dockerfile
     container_name: non-evm-container
     working_dir: /app
-    entrypoint: ["/app/entrypoint.sh"]
+    command: bash -c "chmod +x /app/entrypoint.sh && /app/entrypoint.sh"
     volumes:
       - ./non-evm:/app
       - ./shared_logs/non-evm:/app/logs
-    tty: true         # Keeps the container alive
-    stdin_open: true  # Allows interactive terminal use
+    tty: true
+    stdin_open: true
     restart: unless-stopped
     environment:
       - RUST_LOG=debug
