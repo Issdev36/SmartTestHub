@@ -3,7 +3,7 @@ FROM ghcr.io/foundry-rs/foundry:latest
 # Set the user to root explicitly
 USER root
 
-# Install Node.js and system dependencies (no sudo needed)
+# Install system dependencies (without nodejs from apt)
 RUN apt-get update && apt-get install -y \
     bash \
     git \
@@ -16,10 +16,14 @@ RUN apt-get update && apt-get install -y \
     python3-venv \
     dos2unix \
     inotify-tools \
-    nodejs \
-    npm \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js v18 (LTS)
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs \
+    && node --version \
+    && npm --version
 
 # Create a Python virtual environment and install Slither
 RUN python3 -m venv /opt/venv && \
@@ -33,9 +37,14 @@ ENV PATH="/opt/venv/bin:${PATH}"
 # Set working directory
 WORKDIR /app
 
+# Install node-gyp dependencies for native modules
+RUN apt-get update && apt-get install -y \
+    python3 make g++ \
+    && npm install -g node-gyp
+
 # Copy package.json and install Node.js dependencies
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm install --no-optional || npm install --no-optional --force
 
 # Install additional security and analysis tools
 RUN npm install -g @openzeppelin/hardhat-upgrades \
@@ -48,6 +57,7 @@ COPY . .
 
 # Fix script permissions and line endings and create a startup script
 RUN dos2unix ./entrypoint.sh && chmod +x ./entrypoint.sh
+
 # Create a startup wrapper script that will handle permissions at runtime
 RUN echo '#!/bin/bash\n\
 # Activate Python virtual environment\n\
