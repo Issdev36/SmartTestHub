@@ -2,7 +2,7 @@ FROM rust:1.85-slim
 
 # Setting up the environment variables explicitly
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PATH="/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:/root/.avm/bin:${PATH}"
+ENV PATH="/opt/venv/bin:/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:/root/.avm/bin:${PATH}"
 ENV SOLANA_INSTALL_DIR="/root/.local/share/solana/install"
 ENV AWS_XRAY_SDK_ENABLED=true
 
@@ -10,11 +10,15 @@ ENV AWS_XRAY_SDK_ENABLED=true
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl git pkg-config build-essential libssl-dev libudev-dev \
     llvm clang libclang-dev cmake dos2unix ca-certificates unzip inotify-tools \
-    nodejs npm python3 python3-pip \
+    nodejs npm python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Install AWS X-Ray SDK
-RUN pip3 install aws-xray-sdk
+# Create and use Python virtual environment
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install AWS X-Ray SDK in virtual environment
+RUN pip install aws-xray-sdk
 
 # Install Solana CLI with explicit export in the same RUN command
 RUN curl --proto '=https' --tlsv1.2 -sSfL https://release.solana.com/stable/install | sh && \
