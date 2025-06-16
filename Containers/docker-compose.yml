@@ -31,11 +31,15 @@ services:
     volumes:
       - ./shared/input:/app/input
       - ./shared/logs/non-evm:/app/logs
+      - ./non-evm/entrypoint.sh:/app/entrypoint.sh
+      - ./non-evm/entrypoint-patch.sh:/app/entrypoint-patch.sh
+    command: bash -c "chmod +x /app/entrypoint-patch.sh && /app/entrypoint-patch.sh && /app/entrypoint-wrapper.sh"
     tty: true
     stdin_open: true
     restart: unless-stopped
     environment:
       - RUST_LOG=debug
       - SOLANA_URL=https://api.devnet.solana.com
+      - AWS_XRAY_SDK_ENABLED=false
     env_file:
       - .env
