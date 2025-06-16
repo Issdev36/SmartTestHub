@@ -5,6 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/opt/venv/bin:/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:/root/.avm/bin:${PATH}"
 ENV SOLANA_INSTALL_DIR="/root/.local/share/solana/install"
 ENV AWS_XRAY_SDK_ENABLED=true
+ENV AWS_REGION=us-east-1
 
 # Install system dependencies including Node.js and AWS X-Ray daemon
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -20,16 +21,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Install AWS X-Ray SDK in virtual environment
 RUN pip install aws-xray-sdk
 
-# Install Solana CLI with explicit export in the same RUN command
-RUN curl --proto '=https' --tlsv1.2 -sSfL https://release.solana.com/stable/install | bash && \
+# Install Solana CLI with a specific version and verify
+RUN apt-get update && apt-get install -y libudev-dev && \
+    curl -sSfL https://release.solana.com/v1.17.3/install -o install_solana.sh && \
+    sh install_solana.sh && \
     export PATH="/root/.local/share/solana/install/active_release/bin:$PATH" && \
     echo 'export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"' >> /root/.bashrc && \
-    echo 'export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"' >> /root/.profile
-
-# Verify Solana is installed with the correct PATH
-RUN export PATH="/root/.local/share/solana/install/active_release/bin:$PATH" && \
-    solana --version || echo "Solana CLI not found in PATH" && \
-    echo "PATH: $PATH"
+    echo 'export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"' >> /root/.profile && \
+    ls -la /root/.local/share/solana/install/active_release/bin/ && \
+    /root/.local/share/solana/install/active_release/bin/solana --version
 
 # Install AVM (Anchor Version Manager) and Anchor CLI with error handling
 RUN cargo install --git https://github.com/coral-xyz/anchor avm --locked --force || \
@@ -94,10 +94,10 @@ COPY src /app/src
 
 # Set proper permissions
 RUN chmod -R 755 /app/logs /app/input /app/config && \
-    chmod 644 /app/config/*.toml
+    chmod 644 /app/config/*.toml || true
 
-# Create base X-Ray config
-RUN echo '{\n  "SamplingRules": [],\n  "DaemonAddress": "127.0.0.1:2000",\n  "ServiceName": "SmartTestHub-NonEVM",\n  "LogLevel": "info"\n}' > /app/config/xray-config.json
+# Create base X-Ray config with local mode enabled
+RUN echo '{\n  "SamplingRules": [],\n  "DaemonAddress": "127.0.0.1:2000",\n  "ServiceName": "SmartTestHub-NonEVM",\n  "LogLevel": "info",\n  "LocalMode": true\n}' > /app/config/xray-config.json
 
 # Use the wrapper script as entrypoint
 ENTRYPOINT ["/docker-entrypoint.sh"]
