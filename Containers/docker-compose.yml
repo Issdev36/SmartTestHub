@@ -8,7 +8,7 @@ services:
     container_name: evm-container
     working_dir: /app
     volumes:
-      - ./evm:/app
+      - ./evm/input:/app/input
       - ./shared_logs/evm:/app/logs
     # No command specified - using the entrypoint from Dockerfile
     tty: true
@@ -31,7 +31,7 @@ services:
     working_dir: /app
     # No command specified - using the entrypoint from Dockerfile
     volumes:
-      - ./non-evm:/app
+      - ./non-evm/input:/app/input
       - ./shared_logs/non-evm:/app/logs
     tty: true
     stdin_open: true
