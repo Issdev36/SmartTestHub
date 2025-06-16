@@ -13,16 +13,22 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     python3 \
     python3-pip \
+    python3-venv \
     dos2unix \
     inotify-tools \
     nodejs \
     npm \
-    python3-pip \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-# Install Slither for security analysis
-RUN pip3 install slither-analyzer --break-system-packages
+# Create a Python virtual environment and install Slither
+RUN python3 -m venv /opt/venv && \
+    . /opt/venv/bin/activate && \
+    pip install slither-analyzer && \
+    echo 'source /opt/venv/bin/activate' >> /root/.bashrc
+
+# Add virtual environment to PATH
+ENV PATH="/opt/venv/bin:${PATH}"
 
 # Set working directory
 WORKDIR /app
@@ -43,7 +49,13 @@ COPY . .
 # Fix script permissions and line endings and create a startup script
 RUN dos2unix ./entrypoint.sh && chmod +x ./entrypoint.sh
 # Create a startup wrapper script that will handle permissions at runtime
-RUN echo '#!/bin/bash\nchmod +x /app/entrypoint.sh\nexec /app/entrypoint.sh "$@"' > /docker-entrypoint.sh \
+RUN echo '#!/bin/bash\n\
+# Activate Python virtual environment\n\
+source /opt/venv/bin/activate\n\
+\n\
+# Make script executable and run it\n\
+chmod +x /app/entrypoint.sh\n\
+exec /app/entrypoint.sh "$@"' > /docker-entrypoint.sh \
     && chmod +x /docker-entrypoint.sh
 
 # Create required directories that backend will use
