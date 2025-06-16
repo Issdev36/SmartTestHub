@@ -1,7 +1,9 @@
 FROM rust:1.85-slim
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PATH="/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:/root/.avm/bin:$PATH"
+# Setting up the environment variables explicitly
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH="/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:/root/.avm/bin:${PATH}"
+ENV SOLANA_INSTALL_DIR="/root/.local/share/solana/install"
 
 # Install system dependencies including Node.js
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -10,8 +12,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Solana CLI
-RUN curl --proto '=https' --tlsv1.2 -sSfL https://release.solana.com/stable/install | sh
+# Install Solana CLI with explicit export in the same RUN command
+RUN curl --proto '=https' --tlsv1.2 -sSfL https://release.solana.com/stable/install | sh && \
+    echo 'export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"' >> /root/.bashrc && \
+    echo 'export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"' >> /root/.profile && \
+    export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"
+
+# Verify Solana is installed
+RUN solana --version || echo "Solana CLI not found in PATH"
 
 # Install AVM (Anchor Version Manager) and Anchor CLI with error handling
 RUN cargo install --git https://github.com/coral-xyz/anchor avm --locked --force || \
@@ -42,8 +50,13 @@ RUN mkdir -p /app/src /app/tests /app/config /app/input /app/logs \
 COPY config /app/config
 COPY entrypoint.sh /app/entrypoint.sh
 RUN dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+
 # Create a startup wrapper script that will handle permissions at runtime
-RUN echo '#!/bin/bash\nchmod +x /app/entrypoint.sh\nexec /app/entrypoint.sh "$@"' > /docker-entrypoint.sh \
+# and ensure the PATH is set correctly
+RUN echo '#!/bin/bash\n\
+export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"\n\
+chmod +x /app/entrypoint.sh\n\
+exec /app/entrypoint.sh "$@"' > /docker-entrypoint.sh \
     && chmod +x /docker-entrypoint.sh
 
 # Create initial Cargo.toml
