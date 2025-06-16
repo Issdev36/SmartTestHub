@@ -1,5 +1,3 @@
-# Update the entrypoint-patch.sh with all fixes
-cat > ~/SmartTestHub/Containers/non-evm/entrypoint-patch.sh << 'EOF'
 #!/bin/bash
 
 # Apply these changes to the main entrypoint.sh
@@ -70,4 +68,3 @@ if [ ! -f "/app/Cargo.lock" ]; then
 fi
 
 echo "All patches applied successfully"
-EOF
