@@ -17,11 +17,15 @@ RUN apt-get update && apt-get install -y \
     inotify-tools \
     nodejs \
     npm \
+    python3-pip \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
 # Install Slither for security analysis
 RUN pip3 install slither-analyzer
+
+# Install solidity-coverage reporter
+RUN pip3 install solidity-coverage-reporter
 
 # Set working directory
 WORKDIR /app
@@ -33,7 +37,8 @@ RUN npm install
 # Install additional security and analysis tools
 RUN npm install -g @openzeppelin/hardhat-upgrades \
     hardhat-contract-sizer hardhat-docgen hardhat-storage-layout \
-    @ethereum/security-analysis || echo "Some packages may not be available"
+    @ethereum/security-analysis solidity-coverage hardhat-gas-reporter eth-gas-reporter \
+    || echo "Some packages may not be available"
 
 # Copy all application files
 COPY . .
