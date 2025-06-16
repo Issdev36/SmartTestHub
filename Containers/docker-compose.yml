@@ -8,9 +8,8 @@ services:
     container_name: evm-container
     working_dir: /app
     volumes:
-      - ./evm/input:/app/input
-      - ./shared_logs/evm:/app/logs
-    # No command specified - using the entrypoint from Dockerfile
+      - ./shared/input:/app/input
+      - ./shared/logs/evm:/app/logs
     tty: true
     stdin_open: true
     restart: unless-stopped
@@ -29,10 +28,9 @@ services:
       dockerfile: Dockerfile
     container_name: non-evm-container
     working_dir: /app
-    # No command specified - using the entrypoint from Dockerfile
     volumes:
-      - ./non-evm/input:/app/input
-      - ./shared_logs/non-evm:/app/logs
+      - ./shared/input:/app/input
+      - ./shared/logs/non-evm:/app/logs
     tty: true
     stdin_open: true
     restart: unless-stopped
