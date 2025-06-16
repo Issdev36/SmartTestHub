@@ -4,13 +4,17 @@ FROM rust:1.85-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/root/.cargo/bin:/root/.local/share/solana/install/active_release/bin:/root/.avm/bin:${PATH}"
 ENV SOLANA_INSTALL_DIR="/root/.local/share/solana/install"
+ENV AWS_XRAY_SDK_ENABLED=true
 
-# Install system dependencies including Node.js
+# Install system dependencies including Node.js and AWS X-Ray daemon
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl git pkg-config build-essential libssl-dev libudev-dev \
     llvm clang libclang-dev cmake dos2unix ca-certificates unzip inotify-tools \
-    nodejs npm \
+    nodejs npm python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install AWS X-Ray SDK
+RUN pip3 install aws-xray-sdk
 
 # Install Solana CLI with explicit export in the same RUN command
 RUN curl --proto '=https' --tlsv1.2 -sSfL https://release.solana.com/stable/install | sh && \
@@ -33,6 +37,7 @@ RUN (avm install 0.29.0 && avm use 0.29.0) || \
 # Install comprehensive Rust tools for testing and analysis
 RUN cargo install cargo-tarpaulin cargo-audit cargo-deny cargo-outdated \
     cargo-license cargo-tree cargo-udeps cargo-unused-features cargo-machete \
+    cargo-expand cargo-llvm-cov \
     --locked && \
     rustup component add clippy
 
@@ -40,11 +45,17 @@ RUN cargo install cargo-tarpaulin cargo-audit cargo-deny cargo-outdated \
 RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh || \
     echo "wasm-pack installation failed, continuing..."
 
+# Install AWS X-Ray daemon
+RUN curl -O https://s3.us-east-2.amazonaws.com/aws-xray-assets.us-east-2/xray-daemon/aws-xray-daemon-linux-3.x.zip && \
+    unzip aws-xray-daemon-linux-3.x.zip && \
+    cp xray /usr/local/bin/ && \
+    rm -rf aws-xray-daemon-linux-3.x.zip cfg README.md LICENSE xray
+
 # Create workdir and comprehensive directory structure
 WORKDIR /app
 RUN mkdir -p /app/src /app/tests /app/config /app/input /app/logs \
     /app/logs/coverage /app/logs/security /app/logs/analysis /app/logs/reports \
-    /app/target /app/.cargo
+    /app/logs/xray /app/target /app/.cargo
 
 # Copy config files
 COPY config /app/config
@@ -66,6 +77,9 @@ COPY src /app/src
 # Set proper permissions
 RUN chmod -R 755 /app/logs /app/input /app/config && \
     chmod 644 /app/config/*.toml
+
+# Create base X-Ray config
+RUN echo '{\n  "SamplingRules": [],\n  "DaemonAddress": "127.0.0.1:2000",\n  "ServiceName": "SmartTestHub-NonEVM",\n  "LogLevel": "info"\n}' > /app/config/xray-config.json
 
 # Use the wrapper script as entrypoint
 ENTRYPOINT ["/docker-entrypoint.sh"]
