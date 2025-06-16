@@ -21,13 +21,15 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install aws-xray-sdk
 
 # Install Solana CLI with explicit export in the same RUN command
-RUN curl --proto '=https' --tlsv1.2 -sSfL https://release.solana.com/stable/install | sh && \
+RUN curl --proto '=https' --tlsv1.2 -sSfL https://release.solana.com/stable/install | bash && \
+    export PATH="/root/.local/share/solana/install/active_release/bin:$PATH" && \
     echo 'export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"' >> /root/.bashrc && \
-    echo 'export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"' >> /root/.profile && \
-    export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"
+    echo 'export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"' >> /root/.profile
 
-# Verify Solana is installed
-RUN solana --version || echo "Solana CLI not found in PATH"
+# Verify Solana is installed with the correct PATH
+RUN export PATH="/root/.local/share/solana/install/active_release/bin:$PATH" && \
+    solana --version || echo "Solana CLI not found in PATH" && \
+    echo "PATH: $PATH"
 
 # Install AVM (Anchor Version Manager) and Anchor CLI with error handling
 RUN cargo install --git https://github.com/coral-xyz/anchor avm --locked --force || \
@@ -49,10 +51,11 @@ RUN cargo install cargo-tarpaulin cargo-audit cargo-deny cargo-outdated \
 RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh || \
     echo "wasm-pack installation failed, continuing..."
 
-# Install AWS X-Ray daemon
+# Install AWS X-Ray daemon with proper permissions
 RUN curl -O https://s3.us-east-2.amazonaws.com/aws-xray-assets.us-east-2/xray-daemon/aws-xray-daemon-linux-3.x.zip && \
     unzip aws-xray-daemon-linux-3.x.zip && \
     cp xray /usr/local/bin/ && \
+    chmod +x /usr/local/bin/xray && \
     rm -rf aws-xray-daemon-linux-3.x.zip cfg README.md LICENSE xray
 
 # Create workdir and comprehensive directory structure
@@ -69,7 +72,18 @@ RUN dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 # Create a startup wrapper script that will handle permissions at runtime
 # and ensure the PATH is set correctly
 RUN echo '#!/bin/bash\n\
+# Activate Python virtual environment\n\
+source /opt/venv/bin/activate\n\
+\n\
+# Make sure Solana is in the PATH\n\
 export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"\n\
+\n\
+# Verify and print current PATH\n\
+echo "Current PATH: $PATH"\n\
+echo "Checking for solana: $(which solana 2>/dev/null || echo \"Not found\")"\n\
+echo "Checking for xray: $(which xray 2>/dev/null || echo \"Not found\")"\n\
+\n\
+# Make script executable and run it\n\
 chmod +x /app/entrypoint.sh\n\
 exec /app/entrypoint.sh "$@"' > /docker-entrypoint.sh \
     && chmod +x /docker-entrypoint.sh
