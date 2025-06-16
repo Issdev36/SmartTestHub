@@ -24,9 +24,6 @@ RUN apt-get update && apt-get install -y \
 # Install Slither for security analysis
 RUN pip3 install slither-analyzer
 
-# Install solidity-coverage reporter
-RUN pip3 install solidity-coverage-reporter
-
 # Set working directory
 WORKDIR /app
 
