@@ -18,6 +18,7 @@ mkdir -p /app/logs/coverage
 mkdir -p /app/logs/gas
 mkdir -p /app/logs/foundry
 mkdir -p /app/logs/reports
+mkdir -p /app/config
 
 LOG_FILE="/app/logs/evm-test.log"
 
@@ -29,12 +30,107 @@ log_with_timestamp() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
+# Function to ensure Hardhat config exists
+ensure_hardhat_config() {
+    if [ ! -f "/app/config/hardhat.config.js" ]; then
+        log_with_timestamp "📝 Creating Hardhat configuration..."
+        cat > "/app/config/hardhat.config.js" <<EOF
+require("@nomicfoundation/hardhat-toolbox");
+require("solidity-coverage");
+require("hardhat-gas-reporter");
+require("hardhat-contract-sizer");
+require("hardhat-docgen");
+require("hardhat-storage-layout");
+require("@openzeppelin/hardhat-upgrades");
+
+/** @type import('hardhat/config').HardhatUserConfig */
+module.exports = {
+  solidity: {
+    compilers: [
+      {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200,
+          },
+        },
+      },
+      {
+        version: "0.8.20",
+      },
+      {
+        version: "0.8.17",
+      },
+      {
+        version: "0.6.12",
+      },
+    ],
+  },
+  networks: {
+    hardhat: {
+      chainId: 1337,
+      allowUnlimitedContractSize: true,
+    },
+    localhost: {
+      url: "http://127.0.0.1:8545",
+    },
+  },
+  gasReporter: {
+    enabled: process.env.REPORT_GAS === "true",
+    currency: "USD",
+    outputFile: "./logs/gas/gas-report.txt",
+    noColors: true,
+  },
+  contractSizer: {
+    alphaSort: true,
+    runOnCompile: true,
+    disambiguatePaths: false,
+    outputFile: "./logs/reports/contract-sizes.txt",
+  },
+  docgen: {
+    path: './logs/docs',
+    clear: true,
+    runOnCompile: true,
+  },
+  paths: {
+    sources: "./contracts",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts",
+  },
+};
+EOF
+        log_with_timestamp "✅ Created enhanced Hardhat configuration"
+    fi
+    
+    # Ensure Slither config exists
+    if [ ! -f "/app/config/slither.config.json" ]; then
+        log_with_timestamp "📝 Creating Slither configuration..."
+        cat > "/app/config/slither.config.json" <<EOF
+{
+  "detectors_to_exclude": [],
+  "exclude_informational": false,
+  "exclude_low": false,
+  "exclude_medium": false,
+  "exclude_high": false,
+  "solc_disable_warnings": false,
+  "json": "/app/logs/slither/slither-report.json"
+}
+EOF
+        log_with_timestamp "✅ Created Slither configuration"
+    fi
+}
+
 # Initialize git if not already done (required for some tools)
 if [ ! -d ".git" ]; then
     git init . 2>/dev/null || true
     git config user.name "SmartTestHub" 2>/dev/null || true
     git config user.email "test@smarttesthub.com" 2>/dev/null || true
 fi
+
+# Ensure configuration files exist
+ensure_hardhat_config
 
 # Watch the input folder where backend will drop .sol files
 log_with_timestamp "📡 Watching /app/input for incoming Solidity files..."
