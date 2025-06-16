@@ -68,8 +68,8 @@ RUN mkdir -p /app/src /app/tests /app/config /app/input /app/logs \
     /app/logs/xray /app/target /app/.cargo
 
 # Copy config files
-COPY config /app/config || mkdir -p /app/config
-COPY entrypoint.sh /app/entrypoint.sh
+COPY config /app/config || true
+COPY entrypoint.sh /app/entrypoint.sh || touch /app/entrypoint.sh
 RUN dos2unix /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Create a startup wrapper script that will handle permissions at runtime
@@ -91,17 +91,36 @@ chmod +x /app/entrypoint.sh\n\
 exec /app/entrypoint.sh "$@"' > /docker-entrypoint.sh \
     && chmod +x /docker-entrypoint.sh
 
-# Create initial Cargo.toml if not copied
-RUN touch /app/Cargo.toml
-COPY Cargo.toml /app/Cargo.toml || echo '[package]\nname = "solana-test-app"\nversion = "0.1.0"\nedition = "2021"\n\n[lib]\ncrate-type = ["cdylib", "lib"]\n\n[dependencies]\nsolana-program = "1.17.0"' > /app/Cargo.toml
+# Create default Cargo.toml with fallback
+COPY Cargo.toml /app/Cargo.toml || true
+RUN if [ ! -s /app/Cargo.toml ]; then \
+    echo '[package]' > /app/Cargo.toml && \
+    echo 'name = "solana-test-app"' >> /app/Cargo.toml && \
+    echo 'version = "0.1.0"' >> /app/Cargo.toml && \
+    echo 'edition = "2021"' >> /app/Cargo.toml && \
+    echo '' >> /app/Cargo.toml && \
+    echo '[lib]' >> /app/Cargo.toml && \
+    echo 'crate-type = ["cdylib", "lib"]' >> /app/Cargo.toml && \
+    echo '' >> /app/Cargo.toml && \
+    echo '[dependencies]' >> /app/Cargo.toml && \
+    echo 'solana-program = "1.17.0"' >> /app/Cargo.toml; \
+fi
 
 # Create src directory with placeholder
 RUN mkdir -p /app/src
-COPY src /app/src || echo 'use solana_program::entrypoint::ProgramResult;\npub fn process_instruction() -> ProgramResult {\n    Ok(())\n}' > /app/src/lib.rs
+COPY src /app/src || true
+RUN if [ ! -s /app/src/lib.rs ]; then \
+    echo 'use solana_program::entrypoint::ProgramResult;' > /app/src/lib.rs && \
+    echo 'pub fn process_instruction() -> ProgramResult {' >> /app/src/lib.rs && \
+    echo '    Ok(())' >> /app/src/lib.rs && \
+    echo '}' >> /app/src/lib.rs; \
+fi
 
 # Set proper permissions
 RUN chmod -R 755 /app/logs /app/input /app/config && \
-    chmod 644 /app/Cargo.toml /app/src/lib.rs
+    chmod 644 /app/Cargo.toml && \
+    chmod -R 644 /app/src/* && \
+    chmod 755 /app/src
 
 # Create base X-Ray config with local mode enabled
 RUN echo '{\n  "SamplingRules": [],\n  "DaemonAddress": "127.0.0.1:2000",\n  "ServiceName": "SmartTestHub-NonEVM",\n  "LogLevel": "info",\n  "LocalMode": true\n}' > /app/config/xray-config.json
