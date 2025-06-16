@@ -8,19 +8,21 @@ services:
     container_name: evm-container
     working_dir: /app
     volumes:
-      - ./shared/input:/app/input
-      - ./shared/logs/evm:/app/logs
+      - shared_input:/app/input
+      - shared_logs_evm:/app/logs
     tty: true
     stdin_open: true
     restart: unless-stopped
     environment:
       - NODE_ENV=development
-      - COINMARKETCAP_API_KEY=${COINMARKETCAP_API_KEY}
-      - ALCHEMY_API_KEY=${ALCHEMY_API_KEY}
-      - ETHERSCAN_API_KEY=${ETHERSCAN_API_KEY}
+      - COINMARKETCAP_API_KEY=${COINMARKETCAP_API_KEY:-}
+      - ALCHEMY_API_KEY=${ALCHEMY_API_KEY:-}
+      - ETHERSCAN_API_KEY=${ETHERSCAN_API_KEY:-}
       - REPORT_GAS=true
     env_file:
       - .env
+    networks:
+      - smarthub-network
 
   non-evm:
     build:
@@ -29,11 +31,16 @@ services:
     container_name: non-evm-container
     working_dir: /app
     volumes:
-      - ./shared/input:/app/input
-      - ./shared/logs/non-evm:/app/logs
+      - shared_input:/app/input
+      - shared_logs_non_evm:/app/logs
       - ./non-evm/entrypoint.sh:/app/entrypoint.sh
       - ./non-evm/entrypoint-patch.sh:/app/entrypoint-patch.sh
-    command: bash -c "chmod +x /app/entrypoint-patch.sh && /app/entrypoint-patch.sh && /app/entrypoint-wrapper.sh"
+    command: >
+      bash -c "
+        chmod +x /app/entrypoint-patch.sh &&
+        /app/entrypoint-patch.sh &&
+        /app/entrypoint-wrapper.sh
+      "
     tty: true
     stdin_open: true
     restart: unless-stopped
@@ -43,3 +50,52 @@ services:
       - AWS_XRAY_SDK_ENABLED=false
     env_file:
       - .env
+    networks:
+      - smarthub-network
+
+  # File input service that makes the shared directory accessible to your backend
+  file-input:
+    image: busybox
+    container_name: file-input-service
+    volumes:
+      - shared_input:/data/input
+    command: >
+      sh -c "
+        chmod -R 777 /data/input &&
+        mkdir -p /data/input &&
+        chmod -R 777 /data/input &&
+        echo 'Input directory ready at /data/input' &&
+        tail -f /dev/null
+      "
+    restart: unless-stopped
+    networks:
+      - smarthub-network
+
+  # Permissions handler service - runs once to set up permissions
+  permissions:
+    image: busybox
+    volumes:
+      - shared_input:/data/input
+      - shared_logs_evm:/data/logs/evm
+      - shared_logs_non_evm:/data/logs/non-evm
+    command: >
+      sh -c "
+        mkdir -p /data/input /data/logs/evm /data/logs/non-evm &&
+        chmod -R 777 /data/input /data/logs/evm /data/logs/non-evm &&
+        echo 'All permissions set correctly' &&
+        echo 'Input directory: /data/input' &&
+        echo 'EVM logs directory: /data/logs/evm' &&
+        echo 'Non-EVM logs directory: /data/logs/non-evm'
+      "
+    restart: "no"
+    networks:
+      - smarthub-network
+
+volumes:
+  shared_input:  # Docker-managed volume for input files
+  shared_logs_evm:  # Docker-managed volume for EVM logs
+  shared_logs_non_evm:  # Docker-managed volume for non-EVM logs
+
+networks:
+  smarthub-network:
+    driver: bridge
