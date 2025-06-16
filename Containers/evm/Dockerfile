@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y \
  && rm -rf /var/lib/apt/lists/*
 
 # Install Slither for security analysis
-RUN pip3 install slither-analyzer
+RUN pip3 install slither-analyzer --break-system-packages
 
 # Set working directory
 WORKDIR /app
