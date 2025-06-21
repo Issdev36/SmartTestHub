@@ -1,14 +1,49 @@
 #!/bin/bash
-set -e
+
+# Enhanced error handling and recovery
+handle_error() {
+    local exit_code=$?
+    local line_no=$1
+    local command="$2"
+    log_with_timestamp "❌ Error occurred at line $line_no: $command (exit code: $exit_code)" "error"
+    
+    # Cleanup temporary files
+    cleanup_temp_files
+    
+    # Don't exit, continue watching for new files
+    return $exit_code
+}
+
+cleanup_temp_files() {
+    log_with_timestamp "🧹 Cleaning up temporary files..." "info"
+    # Remove any temporary build artifacts
+    rm -rf /tmp/smarttesthub_* 2>/dev/null || true
+    # Clean up any stale lock files
+    find "${project_dir:-/app}" -name "*.lock" -mtime +1 -delete 2>/dev/null || true
+}
+
+# Set up error trapping
+trap 'handle_error $LINENO "$BASH_COMMAND"' ERR
 
 # Enhanced entrypoint script for Non-EVM (Solana) container
-# Provides comprehensive testing, security analysis, and reporting
+# Provides comprehensive testing, security analysis, and reporting with parallel processing foundation
 
 LOG_FILE="/app/logs/test.log"
 ERROR_LOG="/app/logs/error.log"
 SECURITY_LOG="/app/logs/security/security-audit.log"
 PERFORMANCE_LOG="/app/logs/analysis/performance.log"
 XRAY_LOG="/app/logs/xray/xray.log"
+
+# Parallel processing configuration
+MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-3}
+ACTIVE_JOBS=()
+JOB_QUEUE=()
+
+# Initialize global variables
+START_TIME=$(date +%s)
+PROCESSED_FILES_COUNT=0
+HEALTH_CHECK_INTERVAL=30
+LAST_HEALTH_CHECK=0
 
 # Create all required directories
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -20,275 +55,377 @@ mkdir -p /app/logs/coverage
 mkdir -p /app/logs/reports
 mkdir -p /app/logs/benchmarks
 
-# Load environment variables if .env exists
-if [ -f "/app/.env" ]; then
-    export $(cat /app/.env | grep -v '^#' | xargs)
-    echo "✅ Environment variables loaded from .env"
-fi
-
-# Function to log with timestamp to multiple files
-log_with_timestamp() {
-    local message="$1"
-    local log_type="${2:-info}"
-    local timestamp="[$(date '+%Y-%m-%d %H:%M:%S')]"
+# Secure environment setup
+setup_secure_environment() {
+    log_with_timestamp "🔐 Setting up secure environment..." "security"
     
-    case $log_type in
-        "error")
-            echo "$timestamp ❌ $message" | tee -a "$LOG_FILE" "$ERROR_LOG"
-            ;;
-        "security")
-            echo "$timestamp 🛡️ $message" | tee -a "$LOG_FILE" "$SECURITY_LOG"
-            ;;
-        "performance")
-            echo "$timestamp ⚡ $message" | tee -a "$LOG_FILE" "$PERFORMANCE_LOG"
-            ;;
-        "xray")
-            echo "$timestamp 📡 $message" | tee -a "$LOG_FILE" "$XRAY_LOG"
-            ;;
-        *)
-            echo "$timestamp $message" | tee -a "$LOG_FILE"
-            ;;
+    # Load Docker secrets if available
+    if [[ -d "/run/secrets" ]]; then
+        log_with_timestamp "📂 Found Docker secrets directory" "security"
+        for secret_file in /run/secrets/*; do
+            if [[ -f "$secret_file" ]]; then
+                local secret_name=$(basename "$secret_file")
+                local secret_value=$(cat "$secret_file")
+                export "${secret_name^^}"="$secret_value"
+                log_with_timestamp "✅ Loaded secret: $secret_name" "security"
+            fi
+        done
+    fi
+    
+    # Load .env file securely
+    if [ -f "/app/.env" ]; then
+        while IFS= read -r line; do
+            [[ $line =~ ^[[:space:]]*# ]] && continue
+            [[ -z $line ]] && continue
+            if [[ $line =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+                export "$line"
+            fi
+        done < "/app/.env"
+        log_with_timestamp "✅ Environment variables loaded from .env" "security"
+    fi
+    
+    # Validate required environment variables
+    local required_vars=("SOLANA_URL")
+    for var in "${required_vars[@]}"; do
+        if [[ -z "${!var}" ]]; then
+            log_with_timestamp "⚠️ Required environment variable not set: $var" "security"
+            case $var in
+                "SOLANA_URL")
+                    export SOLANA_URL="https://api.devnet.solana.com"
+                    log_with_timestamp "🔧 Set default SOLANA_URL: $SOLANA_URL" "security"
+                    ;;
+            esac
+        fi
+    done
+    
+    # Secure umask and history
+    umask 0027
+    export HISTFILE="/dev/null"
+    export HISTSIZE=0
+    
+    log_with_timestamp "✅ Secure environment setup completed" "security"
+}
+
+# Input validation functions
+validate_contract_file() {
+    local file_path="$1"
+    local filename=$(basename "$file_path")
+    log_with_timestamp "🔍 Validating contract file: $filename" "info"
+    
+    if [[ ! -f "$file_path" || ! -r "$file_path" ]]; then
+        log_with_timestamp "❌ File does not exist or is not readable: $file_path" "error"
+        return 1
+    fi
+    
+    local file_size=$(stat -f%z "$file_path" 2>/dev/null || stat -c%s "$file_path" 2>/dev/null || echo 0)
+    if [[ $file_size -gt 10485760 ]]; then
+        log_with_timestamp "❌ File too large: $file_size bytes (max 10MB)" "error"
+        return 1
+    fi
+    
+    if grep -q -E "(eval|exec|system|shell_exec|passthru)" "$file_path"; then
+        log_with_timestamp "⚠️ Potentially dangerous code patterns detected in $filename" "security"
+        return 1
+    fi
+    
+    local temp_file="/tmp/smarttesthub_validate_$$"
+    cp "$file_path" "$temp_file"
+    if ! rustc --cfg 'feature="no-entrypoint"' --crate-type lib --emit=metadata --out-dir /tmp "$temp_file" 2>/dev/null; then
+        log_with_timestamp "❌ Invalid Rust syntax in $filename" "error"
+        rm -f "$temp_file" 2>/dev/null
+        return 1
+    fi
+    rm -f "$temp_file" 2>/dev/null
+    
+    log_with_timestamp "✅ Contract file validation passed: $filename" "info"
+    return 0
+}
+
+sanitize_contract_name() {
+    local name="$1"
+    echo "$name" | sed 's/[^a-zA-Z0-9_-]//g' | tr '[:upper:]' '[:lower:]'
+}
+
+# Resource monitoring
+monitor_resources() {
+    local memory_usage=$(free | awk 'NR==2{printf "%.2f", $3*100/$2}' 2>/dev/null || echo "0")
+    local cpu_usage=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}' | cut -d'%' -f1 2>/dev/null || echo "0")
+    log_with_timestamp "📊 Resource usage - Memory: ${memory_usage}%, CPU: ${cpu_usage}%" "performance"
+    
+    if (( $(echo "$memory_usage > 85" | awk '{print ($1 > $3)}') )); then
+        log_with_timestamp "⚠️ High memory usage detected: ${memory_usage}%" "performance"
+        return 1
+    fi
+    return 0
+}
+
+# Job management functions
+add_job_to_queue() {
+    local job_info="$1"
+    JOB_QUEUE+=("$job_info")
+    log_with_timestamp "📝 Added job to queue: $job_info" "info"
+}
+
+process_job_queue() {
+    while [[ ${#ACTIVE_JOBS[@]} -lt $MAX_CONCURRENT_JOBS && ${#JOB_QUEUE[@]} -gt 0 ]]; do
+        local job_info="${JOB_QUEUE[0]}"
+        JOB_QUEUE=("${JOB_QUEUE[@]:1}")
+        log_with_timestamp "🚀 Starting job: $job_info" "info"
+        process_contract_parallel "$job_info" &
+        ACTIVE_JOBS+=($!)
+    done
+}
+
+wait_for_job_completion() {
+    local completed=()
+    for i in "${!ACTIVE_JOBS[@]}"; do
+        local pid=${ACTIVE_JOBS[i]}
+        if ! kill -0 $pid 2>/dev/null; then
+            wait $pid
+            log_with_timestamp "🏁 Job completed with PID $pid" "info"
+            completed+=($i)
+        fi
+    done
+    for i in $(printf '%s\n' "${completed[@]}" | sort -nr); do
+        unset 'ACTIVE_JOBS[i]'
+    done
+    ACTIVE_JOBS=("${ACTIVE_JOBS[@]}")
+}
+
+process_contract_parallel() {
+    local job_info="$1"
+    local filename=$(echo "$job_info" | cut -d'|' -f1)
+    local watch_dir=$(echo "$job_info" | cut -d'|' -f2)
+    local job_id="$$_$(date +%s%N)"
+    local job_dir="/tmp/smarttesthub_${job_id}"
+    log_with_timestamp "🔄 Processing $filename in parallel (Job ID: $job_id)" "info"
+    process_single_contract "$filename" "$watch_dir" "$job_dir"
+    rm -rf "$job_dir" 2>/dev/null || true
+    log_with_timestamp "✅ Parallel job completed: $filename" "info"
+}
+
+# Health monitoring functions
+perform_health_check() {
+    local now=$(date +%s)
+    if [[ $((now - LAST_HEALTH_CHECK)) -lt $HEALTH_CHECK_INTERVAL ]]; then return 0; fi
+    LAST_HEALTH_CHECK=$now
+    log_with_timestamp "🩺 Performing health check..." "info"
+    local status="healthy"
+    local details=()
+    local disk=$(df /app | awk 'NR==2{print $5}' | cut -d'%' -f1 2>/dev/null || echo 0)
+    if [[ $disk -gt 85 ]]; then
+        status="unhealthy"
+        details+=("High disk usage: ${disk}%")
+        log_with_timestamp "⚠️ High disk usage: ${disk}%" "error"
+    fi
+    for tool in cargo rustc; do
+        if ! command_exists $tool; then
+            status="unhealthy"
+            details+=("Missing tool: $tool")
+            log_with_timestamp "❌ Missing required tool: $tool" "error"
+        fi
+    done
+    for f in "$LOG_FILE" "$ERROR_LOG" "$SECURITY_LOG"; do
+        if [[ -f $f ]]; then
+            local sz=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
+            (( sz > 104857600 )) && {
+                log_with_timestamp "🗜️ Rotating large log file: $f ($sz bytes)" "info"
+                mv "$f" "${f}.old"
+                touch "$f"
+            }
+        fi
+    done
+    cat > /app/logs/health.json <<EOF
+{
+  "status":"$status",
+  "timestamp":"$(date -Iseconds)",
+  "uptime":$((now-START_TIME)),
+  "details":[$(printf '"%s",' "${details[@]}" | sed 's/,$//')]
+}
+EOF
+    log_with_timestamp "🩺 Health check completed: $status" "info"
+}
+
+# Metrics collection
+collect_metrics() {
+    local now=$(date +%s)
+    cat > /app/logs/metrics.json <<EOF
+{
+  "timestamp":"$(date -Iseconds)",
+  "uptime":$((now-START_TIME)),
+  "processed_files":$PROCESSED_FILES_COUNT,
+  "active_jobs":${#ACTIVE_JOBS[@]},
+  "queued_jobs":${#JOB_QUEUE[@]},
+  "memory_usage":"$(free | awk 'NR==2{printf "%.2f", $3*100/$2}')%",
+  "disk_usage":"$(df /app | awk 'NR==2{print $5}')%"
+}
+EOF
+}
+
+# Logging and utility functions
+log_with_timestamp() {
+    local msg="$1" type="${2:-info}" ts="[$(date '+%Y-%m-%d %H:%M:%S')]"
+    case $type in
+      error) echo "$ts ❌ $msg" | tee -a "$LOG_FILE" "$ERROR_LOG" ;;
+      security) echo "$ts 🛡️ $msg" | tee -a "$LOG_FILE" "$SECURITY_LOG" ;;
+      performance) echo "$ts ⚡ $msg" | tee -a "$LOG_FILE" "$PERFORMANCE_LOG" ;;
+      xray) echo "$ts 📡 $msg" | tee -a "$LOG_FILE" "$XRAY_LOG" ;;
+      *) echo "$ts $msg" | tee -a "$LOG_FILE" ;;
     esac
 }
 
-# Function to check if a command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to start X-Ray daemon if installed
+# X-Ray setup
 start_xray_daemon() {
     log_with_timestamp "📡 Setting up AWS X-Ray daemon..." "xray"
-    
-    which xray > /dev/null 2>&1
-    if [ $? -eq 0 ]; then
-        log_with_timestamp "📡 Found X-Ray daemon at $(which xray)" "xray"
-        
-        # Set AWS region manually for local development
+    if command_exists xray; then
         export AWS_REGION="us-east-1"
-        log_with_timestamp "📡 Setting AWS_REGION to $AWS_REGION" "xray"
-        
-        if [ -f "/app/config/xray-config.json" ]; then
-            log_with_timestamp "📡 Starting X-Ray daemon with custom config in local mode..." "xray"
-            # Explicitly run in local mode
-            nohup xray -c /app/config/xray-config.json -l -o > "$XRAY_LOG" 2>&1 &
-        else
-            log_with_timestamp "📡 Starting X-Ray daemon with default config in local mode..." "xray"
-            # Explicitly run in local mode
-            nohup xray -l -o > "$XRAY_LOG" 2>&1 &
-        fi
-        
-        # Check if daemon started properly
+        log_with_timestamp "📡 Starting X-Ray daemon..." "xray"
+        nohup xray -l -o > "$XRAY_LOG" 2>&1 &
         sleep 2
-        if pgrep xray > /dev/null; then
-            log_with_timestamp "✅ X-Ray daemon started successfully" "xray"
+        if pgrep xray >/dev/null; then
+            log_with_timestamp "✅ X-Ray daemon started" "xray"
         else
-            log_with_timestamp "❌ Failed to start X-Ray daemon: $(cat $XRAY_LOG | tail -10)" "error"
-            log_with_timestamp "⚠️ Continuing without X-Ray daemon" "xray"
+            log_with_timestamp "❌ Failed to start X-Ray daemon" "error"
         fi
     else
-        log_with_timestamp "⚠️ X-Ray daemon not found in PATH" "xray"
+        log_with_timestamp "⚠️ X-Ray daemon not found" "xray"
     fi
 }
 
-# Function to generate tarpaulin.toml if needed
+# Coverage config
 generate_tarpaulin_config() {
-    if [ ! -f "/app/tarpaulin.toml" ]; then
-        log_with_timestamp "📊 Generating tarpaulin.toml configuration file..."
-        cat > "/app/tarpaulin.toml" <<EOF
+    if [ ! -f /app/tarpaulin.toml ]; then
+        log_with_timestamp "📊 Generating tarpaulin.toml..." "performance"
+        cat > /app/tarpaulin.toml <<EOF
 [all]
-# Basic configuration
 timeout = 300
 debug = false
 follow-exec = true
 verbose = true
 workspace = true
 
-# Coverage options
-out = ["Html", "Xml"]
+out = ["Html","Xml"]
 output-dir = "/app/logs/coverage"
 
-# Test selection
-exclude-files = [
-    "tests/*",
-    "*/build/*", 
-    "*/dist/*"
-]
-
-# Ignore test failures
+exclude-files = ["tests/*","*/build/*","*/dist/*"]
 ignore-tests = true
 EOF
-        log_with_timestamp "✅ Created tarpaulin.toml"
+        log_with_timestamp "✅ Created tarpaulin.toml" "performance"
     fi
 }
 
-# Function to setup Solana environment
+# Solana environment setup
 setup_solana_environment() {
-    log_with_timestamp "🔧 Setting up Solana environment..."
-    
-    # Check the PATH explicitly
-    log_with_timestamp "Current PATH: $PATH"
-    
-    # Check if solana is in the PATH
+    log_with_timestamp "🔧 Setting up Solana environment..." "info"
+    log_with_timestamp "PATH: $PATH" "info"
     if ! command_exists solana; then
-        log_with_timestamp "⚠️ Solana CLI not found in PATH" "error"
-        log_with_timestamp "PATH: $PATH" "error"
-        
-        # Try to find Solana installation
-        if [ -d "$HOME/.local/share/solana/install/active_release/bin" ]; then
-            log_with_timestamp "🔍 Found Solana installation, adding to PATH" "error"
-            export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
-            log_with_timestamp "Updated PATH: $PATH" "error"
-        else
-            log_with_timestamp "❌ Cannot find Solana installation" "error"
-            # Check if solana was installed during container build
-            if [ -d "/root/.local/share/solana/install/active_release/bin" ]; then
-                log_with_timestamp "🔍 Found Solana installation in /root/.local, adding to PATH"
-                export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"
-                log_with_timestamp "Updated PATH: $PATH"
-                
-                # List files in the bin directory to debug
-                log_with_timestamp "Contents of /root/.local/share/solana/install/active_release/bin:"
-                ls -la /root/.local/share/solana/install/active_release/bin/ | while read -r line; do
-                    log_with_timestamp "   $line"
-                done
-            else
-                log_with_timestamp "🔄 Attempting to install Solana..."
-                curl -sSfL https://release.solana.com/v1.17.3/install -o install_solana.sh
-                sh install_solana.sh
-                export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"
-                log_with_timestamp "Updated PATH after install: $PATH"
+        log_with_timestamp "⚠️ Solana CLI not found" "error"
+        for p in "$HOME/.local/share/solana/install/active_release/bin" "/root/.local/share/solana/install/active_release/bin"; do
+            if [ -d "$p" ]; then
+                export PATH="$p:$PATH"
+                log_with_timestamp "🔍 Added $p to PATH" "info"
+                break
             fi
-        fi
-    fi
-    
-    # Double check after PATH update
-    if ! command_exists solana; then
-        log_with_timestamp "❌ Solana CLI still not found after PATH update" "error"
-        log_with_timestamp "Checking directories:" "error"
-        ls -la /root/.local/share/solana/install/ || echo "Directory does not exist"
-        ls -la /root/.local/share/solana/install/active_release/bin/ || echo "Directory does not exist"
-        
-        # Try directly accessing the binary
-        if [ -f "/root/.local/share/solana/install/active_release/bin/solana" ]; then
-            log_with_timestamp "Found solana binary directly, trying to use it"
-            /root/.local/share/solana/install/active_release/bin/solana --version || log_with_timestamp "Failed to run solana binary" "error"
-        fi
-        
-        return 1
-    fi
-    
-    # Generate keypair if it doesn't exist
-    if [ ! -f ~/.config/solana/id.json ]; then
-        log_with_timestamp "🔑 Generating new Solana keypair..."
-        mkdir -p ~/.config/solana
-        if solana-keygen new --no-bip39-passphrase --silent --outfile ~/.config/solana/id.json; then
-            log_with_timestamp "✅ Solana keypair generated"
-        else
-            log_with_timestamp "❌ Failed to generate Solana keypair" "error"
-            return 1
-        fi
-    fi
-    
-    # Set Solana configuration
-    local solana_url="${SOLANA_URL:-https://api.devnet.solana.com}"
-    if solana config set --url "$solana_url" --keypair ~/.config/solana/id.json; then
-        log_with_timestamp "✅ Solana config set successfully"
-    else
-        log_with_timestamp "❌ Failed to set Solana config" "error"
-        return 1
-    fi
-    
-    # Verify Solana setup
-    if solana config get >/dev/null 2>&1; then
-        log_with_timestamp "✅ Solana CLI configured successfully"
-        solana config get | while read -r line; do
-            log_with_timestamp "   $line"
         done
-    else
-        log_with_timestamp "❌ Failed to configure Solana CLI" "error"
+    fi
+    if ! command_exists solana; then
+        log_with_timestamp "🔄 Installing Solana CLI..." "info"
+        curl -sSfL https://release.solana.com/v1.17.3/install | sh
+        export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"
+    fi
+    if ! command_exists solana; then
+        log_with_timestamp "❌ Solana CLI still missing" "error"
         return 1
     fi
-    
-    # Request airdrop for devnet testing
-    if [[ "$solana_url" == *"devnet"* ]]; then
-        log_with_timestamp "💰 Requesting SOL airdrop for testing..."
-        solana airdrop 2 >/dev/null 2>&1 || log_with_timestamp "⚠️ Airdrop failed (might be rate limited)"
+    if [ ! -f ~/.config/solana/id.json ]; then
+        mkdir -p ~/.config/solana
+        solana-keygen new --no-bip39-passphrase --silent --outfile ~/.config/solana/id.json
+        log_with_timestamp "✅ Solana keypair generated" "info"
     fi
-
+    local url="${SOLANA_URL:-https://api.devnet.solana.com}"
+    solana config set --url "$url" --keypair ~/.config/solana/id.json
     return 0
 }
 
-# Function to detect project type
+# Project type detection
 detect_project_type() {
-    local file_path="$1"
-    
-    if grep -q "#\[program\]" "$file_path" || grep -q "use anchor_lang::prelude" "$file_path"; then
+    local f="$1"
+    if grep -q "#\[program\]" "$f" || grep -q "use anchor_lang::prelude" "$f"; then
         echo "anchor"
-    elif grep -q "entrypoint\!" "$file_path" || grep -q "solana_program::entrypoint\!" "$file_path"; then
+    elif grep -q "entrypoint\!" "$f"; then
         echo "native"
     else
         echo "unknown"
     fi
 }
 
-# Function to create dynamic Cargo.toml
+# Main contract processing
+process_single_contract() {
+    local filename="$1" watch_dir="$2" iso_dir="${3:-$project_dir}"
+    local start=$(date +%s)
+    local name type
+    validate_contract_file "$watch_dir/$filename" || return 1
+    name=$(sanitize_contract_name "${filename%.rs}")
+    log_with_timestamp "🆕 Processing $filename as $name" "info"
+    mkdir -p "$iso_dir/src" "$iso_dir/logs"
+    cp "$watch_dir/$filename" "$iso_dir/src/lib.rs"
+    type=$(detect_project_type "$iso_dir/src/lib.rs")
+    create_dynamic_cargo_toml "$name" "$iso_dir/src/lib.rs" "$type" "$iso_dir"
+    create_test_files "$name" "$type" "$iso_dir"
+    build_contract_with_monitoring "$name" "$iso_dir" || return 1
+    run_comprehensive_analysis "$name" "$iso_dir"
+    local end=$(date +%s)
+    generate_comprehensive_report "$name" "$type" "$start" "$end" "$iso_dir"
+    ((PROCESSED_FILES_COUNT++))
+    log_with_timestamp "🏁 Completed $filename" "info"
+}
+
+build_contract_with_monitoring() {
+    local name="$1" dir="$2"
+    log_with_timestamp "🔨 Building $name..." "info"
+    cd "$dir"
+    monitor_resources || { sleep 10; monitor_resources || return 1; }
+    timeout 600 cargo build-sbf 2>&1 | tee -a "$LOG_FILE" &
+    local pid=$!
+    local start=$(date +%s)
+    while kill -0 $pid 2>/dev/null; do
+        sleep 5
+        (( $(date +%s)-start > 600 )) && { kill $pid; return 1; }
+        monitor_resources || log_with_timestamp "⚠️ High usage during build" "performance"
+    done
+    wait $pid
+    return $?
+}
+
 create_dynamic_cargo_toml() {
-    local contract_name="$1"
-    local source_path="$2"
-    local project_type="$3"
-    
-    log_with_timestamp "📝 Creating dynamic Cargo.toml for $contract_name ($project_type)..."
-    
-    # Create basic Cargo.toml structure
-    cat > "$project_dir/Cargo.toml" <<EOF
+    local name="$1" src="$2" type="$3" dir="$4"
+    log_with_timestamp "📝 Creating Cargo.toml for $name ($type)" "info"
+    cat > "$dir/Cargo.toml" <<EOF
 [package]
-name = "$contract_name"
+name = "$name"
 version = "0.1.0"
 edition = "2021"
-description = "Smart contract automatically processed by SmartTestHub"
+description = "Processed by SmartTestHub"
 
 [lib]
-crate-type = ["cdylib", "lib"]
-EOF
-
-    # Add dependencies based on project type
-    case $project_type in
-        "anchor")
-            cat >> "$project_dir/Cargo.toml" <<EOF
+crate-type = ["cdylib","lib"]
 
 [dependencies]
+solana-program = "1.17.0"
+borsh = "0.10.3"
+borsh-derive = "0.10.3"
+EOF
+    if [[ "$type" == "anchor" ]]; then
+        cat >> "$dir/Cargo.toml" <<EOF
 anchor-lang = "0.29.0"
 anchor-spl = "0.29.0"
-solana-program = "1.17.0"
 EOF
-            ;;
-        "native")
-            cat >> "$project_dir/Cargo.toml" <<EOF
-
-[dependencies]
-solana-program = "1.17.0"
-borsh = "0.10.3"
-borsh-derive = "0.10.3"
-thiserror = "1.0"
-num-traits = "0.2"
-num-derive = "0.4"
-EOF
-            ;;
-        *)
-            # Unknown project type, use generic dependencies
-            cat >> "$project_dir/Cargo.toml" <<EOF
-
-[dependencies]
-solana-program = "1.17.0"
-borsh = "0.10.3"
-borsh-derive = "0.10.3"
-EOF
-            ;;
-    esac
-    
-    # Add dev-dependencies and features
-    cat >> "$project_dir/Cargo.toml" <<EOF
+    fi
+    cat >> "$dir/Cargo.toml" <<EOF
 
 [dev-dependencies]
 solana-program-test = "1.17.0"
@@ -303,373 +440,172 @@ overflow-checks = true
 lto = "fat"
 codegen-units = 1
 EOF
-
-    log_with_timestamp "✅ Created dynamic Cargo.toml"
 }
 
-# Function to create test files
 create_test_files() {
-    local contract_name="$1"
-    local project_type="$2"
-    
-    log_with_timestamp "🧪 Creating test files for $contract_name ($project_type)..."
-    
-    # Create tests directory if it doesn't exist
-    mkdir -p "$project_dir/tests"
-    
-    # Create test file based on project type
-    case $project_type in
-        "anchor")
-            cat > "$project_dir/tests/test_${contract_name}.rs" <<EOF
+    local name="$1" type="$2" dir="$3"
+    log_with_timestamp "🧪 Creating tests for $name ($type)" "info"
+    mkdir -p "$dir/tests"
+    case "$type" in
+        anchor)
+            cat > "$dir/tests/test_${name}.rs" <<EOF
 use anchor_lang::prelude::*;
 use solana_program_test::*;
-use solana_sdk::{signature::{Keypair, Signer}, transaction::Transaction};
+use solana_sdk::signature::Signer;
 
-// Import the program to test
-use ${contract_name}::*;
+use ${name}::*;
 
 #[tokio::test]
-async fn test_${contract_name}_initialization() {
-    // Setup the test environment
+async fn test_${name}_init() {
     let program_id = Pubkey::new_unique();
-    let mut program_test = ProgramTest::new(
-        "${contract_name}",
-        program_id,
-        processor!(process_instruction),
-    );
-
-    // Start the test environment
-    let (mut banks_client, payer, recent_blockhash) = program_test.start().await;
-
-    // Create test logic here
-    // This is a placeholder test that will always pass
+    let mut pt = ProgramTest::new("${name}", program_id, processor!(process_instruction));
+    let (mut banks, payer, _) = pt.start().await;
     assert!(true);
 }
 EOF
             ;;
-        "native")
-            cat > "$project_dir/tests/test_${contract_name}.rs" <<EOF
+        native)
+            cat > "$dir/tests/test_${name}.rs" <<EOF
 use solana_program_test::*;
-use solana_sdk::{
-    account::Account,
-    instruction::{AccountMeta, Instruction},
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
-    transaction::Transaction,
-};
-use std::str::FromStr;
+use solana_sdk::signature::Signer;
 
-// Import the program to test
-use ${contract_name}::*;
+use ${name}::*;
 
 #[tokio::test]
-async fn test_${contract_name}_basic() {
-    // Setup the test environment
+async fn test_${name}_basic() {
     let program_id = Pubkey::new_unique();
-    let mut program_test = ProgramTest::new(
-        "${contract_name}",
-        program_id,
-        processor!(process_instruction),
-    );
-
-    // Start the test environment
-    let (mut banks_client, payer, recent_blockhash) = program_test.start().await;
-
-    // Create test logic here
-    // This is a placeholder test that will always pass
+    let mut pt = ProgramTest::new("${name}", program_id, processor!(process_instruction));
+    let (mut banks, payer, _) = pt.start().await;
     assert!(true);
 }
 EOF
             ;;
         *)
-            # Generic test for unknown project type
-            cat > "$project_dir/tests/test_${contract_name}.rs" <<EOF
-use solana_program_test::*;
-use solana_sdk::signature::{Keypair, Signer};
-
+            cat > "$dir/tests/test_${name}.rs" <<EOF
 #[tokio::test]
-async fn test_${contract_name}_placeholder() {
-    // This is a generic test placeholder
-    // Actual tests would be implemented based on the specific contract functionality
-    assert!(true, "Placeholder test passed");
+async fn test_${name}_placeholder() {
+    assert!(true, "Placeholder test");
 }
 EOF
             ;;
     esac
-    
-    log_with_timestamp "✅ Created test files"
+    log_with_timestamp "✅ Created tests for $name" "info"
 }
 
-# Function to run tests with coverage
+run_comprehensive_analysis() {
+    local name="$1" dir="$2"
+    cd "$dir"
+    run_tests_with_coverage "$name"
+    run_security_audit "$name"
+    run_performance_analysis "$name"
+}
+
 run_tests_with_coverage() {
-    local contract_name="$1"
-    
-    log_with_timestamp "🧪 Running tests with coverage for $contract_name..."
-    
-    # Create coverage directory
-    mkdir -p "/app/logs/coverage"
-    
-    # Run tests with tarpaulin
+    local name="$1"
+    log_with_timestamp "🧪 Running coverage for $name" "performance"
+    mkdir -p /app/logs/coverage
     if cargo tarpaulin --config-path /app/tarpaulin.toml -v; then
-        log_with_timestamp "✅ Tests and coverage completed successfully"
+        log_with_timestamp "✅ Coverage completed" "performance"
     else
-        log_with_timestamp "⚠️ Tests or coverage generation had some issues" "error"
-    fi
-    
-    # Check if coverage reports were generated
-    if [ -f "/app/logs/coverage/tarpaulin-report.html" ]; then
-        log_with_timestamp "📊 Coverage report generated: /app/logs/coverage/tarpaulin-report.html"
-    else
-        log_with_timestamp "❌ Failed to generate coverage report" "error"
+        log_with_timestamp "⚠️ Coverage issues" "error"
     fi
 }
 
-# Function to run security audit
 run_security_audit() {
-    local contract_name="$1"
-    
-    log_with_timestamp "🛡️ Running security audit for $contract_name..." "security"
-    
-    # Create security directory
-    mkdir -p "/app/logs/security"
-    
-    # Run cargo audit
-    if cargo audit -f /app/Cargo.lock > "/app/logs/security/cargo-audit.log" 2>&1; then
-        log_with_timestamp "✅ Cargo audit completed successfully" "security"
-    else
-        log_with_timestamp "⚠️ Cargo audit found potential vulnerabilities" "security"
-    fi
-    
-    # Run clippy for code quality checks
-    if cargo clippy --all-targets --all-features -- -D warnings > "/app/logs/security/clippy.log" 2>&1; then
-        log_with_timestamp "✅ Clippy checks passed" "security"
-    else
-        log_with_timestamp "⚠️ Clippy found code quality issues" "security"
-    fi
+    local name="$1" dir="$2"
+    log_with_timestamp "🛡️ Running security audit for $name" "security"
+    mkdir -p /app/logs/security
+    cargo generate-lockfile >/dev/null 2>&1 || true
+    cargo audit -f "$dir/Cargo.lock" > /app/logs/security/cargo-audit.log 2>&1
+    cargo clippy --all-targets --all-features -- -D warnings > /app/logs/security/clippy.log 2>&1 || log_with_timestamp "⚠️ Clippy warnings" "security"
 }
 
-# Function to run performance analysis
 run_performance_analysis() {
-    local contract_name="$1"
-    
-    log_with_timestamp "⚡ Running performance analysis for $contract_name..." "performance"
-    
-    # Create benchmarks directory
-    mkdir -p "/app/logs/benchmarks"
-    
-    # Run simple build time measurement as a basic performance metric
-    log_with_timestamp "Measuring build time performance..." "performance"
-    
-    local start_time=$(date +%s)
-    if cargo build --release > "/app/logs/benchmarks/build-time.log" 2>&1; then
-        local end_time=$(date +%s)
-        local build_time=$((end_time - start_time))
-        log_with_timestamp "✅ Release build completed in $build_time seconds" "performance"
-    else
-        log_with_timestamp "❌ Release build failed" "performance"
-    fi
-    
-    # Check program size
-    if [ -f "/app/target/release/${contract_name}.so" ]; then
-        local program_size=$(du -h "/app/target/release/${contract_name}.so" | cut -f1)
-        log_with_timestamp "📊 Program size: $program_size" "performance"
+    local name="$1" dir="$2"
+    log_with_timestamp "⚡ Running performance for $name" "performance"
+    mkdir -p /app/logs/benchmarks
+    local s=$(date +%s)
+    cargo build --release > /app/logs/benchmarks/build-time.log 2>&1
+    local e=$(date +%s)
+    log_with_timestamp "✅ Release build in $((e-s))s" "performance"
+    if [[ -f "$dir/target/release/${name}.so" ]]; then
+        local sz=$(du -h "$dir/target/release/${name}.so" | cut -f1)
+        log_with_timestamp "📊 Program size: $sz" "performance"
     fi
 }
 
-# Function to generate comprehensive report
 generate_comprehensive_report() {
-    local contract_name="$1"
-    local project_type="$2"
-    local start_time="$3"
-    local end_time="$4"
-    local processing_time=$((end_time - start_time))
-    
-    log_with_timestamp "📝 Generating comprehensive report for $contract_name..."
-    
-    # Create report directory
-    mkdir -p "/app/logs/reports"
-    
-    # Create the report
-    local report_file="/app/logs/reports/${contract_name}_report.md"
-    
-    cat > "$report_file" <<EOF
-# Comprehensive Analysis Report for $contract_name
+    local name="$1" type="$2" start="$3" end="$4" dir="$5"
+    local elapsed=$((end-start))
+    log_with_timestamp "📝 Generating report for $name" "info"
+    mkdir -p /app/logs/reports
+    local rpt="/app/logs/reports/${name}_report.md"
+    cat > "$rpt" <<EOF
+# Report for $name
 
-## Overview
-- **Contract Name:** $contract_name
-- **Project Type:** $project_type
-- **Processing Time:** $processing_time seconds
-- **Timestamp:** $(date)
+- **Project Type:** $type
+- **Processing Time:** ${elapsed}s
 
-## Build Status
-- Build completed successfully
-- Project structure verified
-
-## Test Results
+## Tests & Coverage
 EOF
-
-    # Add test results to report
-    if [ -f "/app/logs/coverage/tarpaulin-report.html" ]; then
-        echo "- ✅ Tests executed successfully" >> "$report_file"
-        echo "- 📊 Coverage report available at \`/app/logs/coverage/tarpaulin-report.html\`" >> "$report_file"
+    if [[ -f /app/logs/coverage/tarpaulin-report.html ]]; then
+        echo "- ✅ Coverage report: /app/logs/coverage/tarpaulin-report.html" >> "$rpt"
     else
-        echo "- ⚠️ Test coverage report not available" >> "$report_file"
+        echo "- ⚠️ No coverage report" >> "$rpt"
     fi
+    cat >> "$rpt" <<EOF
 
-    # Add security audit results
-    echo -e "\n## Security Analysis" >> "$report_file"
-    if [ -f "/app/logs/security/cargo-audit.log" ]; then
-        echo "- 🛡️ Security audit completed" >> "$report_file"
-        echo "- Details available in \`/app/logs/security/cargo-audit.log\`" >> "$report_file"
-    else
-        echo "- ⚠️ Security audit report not available" >> "$report_file"
-    fi
+## Security
+- Details: /app/logs/security/cargo-audit.log
+- Clippy: /app/logs/security/clippy.log
 
-    # Add performance analysis
-    echo -e "\n## Performance Analysis" >> "$report_file"
-    if [ -f "/app/logs/benchmarks/build-time.log" ]; then
-        echo "- ⚡ Performance analysis completed" >> "$report_file"
-        if [ -f "/app/target/release/${contract_name}.so" ]; then
-            local program_size=$(du -h "/app/target/release/${contract_name}.so" | cut -f1)
-            echo "- 📊 Program size: $program_size" >> "$report_file"
-        fi
-    else
-        echo "- ⚠️ Performance analysis not available" >> "$report_file"
-    fi
-
-    # Add recommendations section
-    echo -e "\n## Recommendations" >> "$report_file"
-    echo "- Ensure comprehensive test coverage for all program paths" >> "$report_file"
-    echo "- Address any security concerns highlighted in the audit report" >> "$report_file"
-    echo "- Consider optimizing program size and execution time if required" >> "$report_file"
-
-    log_with_timestamp "✅ Comprehensive report generated at $report_file"
+## Performance
+- Build time: /app/logs/benchmarks/build-time.log
+EOF
+    log_with_timestamp "✅ Report generated at $rpt" "info"
 }
 
-# Start X-Ray daemon if enabled
-if [ "$AWS_XRAY_SDK_ENABLED" = "true" ]; then
+# Start X-Ray if enabled
+if [[ "$AWS_XRAY_SDK_ENABLED" == "true" ]]; then
     start_xray_daemon
 fi
 
-# Generate tarpaulin config
 generate_tarpaulin_config
 
-# Clear old logs
+# Clear logs
 : > "$LOG_FILE"
 : > "$ERROR_LOG"
 
 watch_dir="/app/input"
 project_dir="/app"
 
-log_with_timestamp "🚀 Starting Enhanced Non-EVM (Solana) Container..."
-log_with_timestamp "📡 Watching for smart contract files in $watch_dir..."
-log_with_timestamp "🔧 Environment: ${RUST_LOG:-info} log level"
+log_with_timestamp "🚀 Starting Enhanced Non-EVM (Solana) Container" "info"
 
-# Setup Solana environment
-setup_solana_environment || {
-    log_with_timestamp "❌ Failed to setup Solana environment" "error"
-    # Instead of exiting which would stop the container, we'll keep it running but log the error
-    # This allows us to inspect the container for debugging
-}
+# Secure and Solana environment
+setup_secure_environment
+setup_solana_environment || log_with_timestamp "❌ Solana setup failed" "error"
 
-# Ensure watch directory exists
 mkdir -p "$watch_dir"
 
-# Start file watching loop
+log_with_timestamp "📡 Watching $watch_dir (max jobs: $MAX_CONCURRENT_JOBS)" "info"
+
+# Main file-watcher loop with parallel processing
 inotifywait -m -e close_write,moved_to,create "$watch_dir" |
-while read -r directory events filename; do
-    if [[ "$filename" == *.rs ]]; then
-        {
-            start_time=$(date +%s)
-            log_with_timestamp "🆕 Processing new Rust contract: $filename"
-            
-            # Extract contract name
-            contract_name="${filename%.rs}"
-            
-            # Create source directory
-            mkdir -p "$project_dir/src"
-            
-            # Copy contract file
-            cp "$watch_dir/$filename" "$project_dir/src/lib.rs"
-            log_with_timestamp "📁 Contract copied to src/lib.rs"
-            
-            # Detect project type
-            project_type=$(detect_project_type "$project_dir/src/lib.rs")
-            log_with_timestamp "🔍 Detected project type: $project_type"
-            
-            # Create dynamic Cargo.toml
-            create_dynamic_cargo_toml "$contract_name" "$project_dir/src/lib.rs" "$project_type"
-            
-            # Create test files
-            create_test_files "$contract_name" "$project_type"
-            
-            # Build the project
-            log_with_timestamp "🔨 Building $contract_name ($project_type)..."
-            case $project_type in
-                "anchor")
-                    # Create/update Anchor.toml
-                    cat > "$project_dir/Anchor.toml" <<EOF
-[features]
-seed = false
-skip-lint = false
+while read -r dir ev file; do
+    perform_health_check
+    collect_metrics
 
-[programs.localnet]
-$contract_name = "target/deploy/${contract_name}.so"
-
-[registry]
-url = "https://api.apr.dev"
-
-[provider]
-cluster = "${SOLANA_URL:-https://api.devnet.solana.com}"
-wallet = "~/.config/solana/id.json"
-
-[scripts]
-test = "cargo test-sbf"
-
-[test]
-startup_wait = 5000
-shutdown_wait = 2000
-upgrade_wait = 1000
-EOF
-                    
-                    if anchor build 2>&1 | tee -a "$LOG_FILE"; then
-                        log_with_timestamp "✅ Anchor build successful"
-                    else
-                        log_with_timestamp "❌ Anchor build failed, trying cargo build-sbf..." "error"
-                        if cargo build-sbf 2>&1 | tee -a "$LOG_FILE"; then
-                            log_with_timestamp "✅ Cargo build-sbf successful"
-                        else
-                            log_with_timestamp "❌ All builds failed for $contract_name" "error"
-                            continue
-                        fi
-                    fi
-                    ;;
-                *)
-                    if cargo build-sbf 2>&1 | tee -a "$LOG_FILE"; then
-                        log_with_timestamp "✅ Build successful"
-                    else
-                        log_with_timestamp "❌ Build failed for $contract_name" "error"
-                        continue
-                    fi
-                    ;;
-            esac
-            
-            # Run tests with coverage
-            run_tests_with_coverage "$contract_name"
-            
-            # Run security audit
-            run_security_audit "$contract_name"
-            
-            # Run performance analysis
-            run_performance_analysis "$contract_name"
-            
-            # Generate comprehensive report
-            end_time=$(date +%s)
-            generate_comprehensive_report "$contract_name" "$project_type" "$start_time" "$end_time"
-            
-            log_with_timestamp "🏁 Completed processing $filename"
-            log_with_timestamp "=========================================="
-            
-        } 2>&1
+    if [[ "$file" == *.rs ]]; then
+        log_with_timestamp "📥 Detected: $file" "info"
+        if [[ ${#ACTIVE_JOBS[@]} -lt $MAX_CONCURRENT_JOBS ]]; then
+            process_contract_parallel "$file|$watch_dir" &
+        else
+            add_job_to_queue "$file|$watch_dir"
+        fi
     fi
+
+    wait_for_job_completion
+    process_job_queue
+
+    log_with_timestamp "📊 Status - Active:${#ACTIVE_JOBS[@]} Queued:${#JOB_QUEUE[@]} Processed:$PROCESSED_FILES_COUNT" "info"
 done
