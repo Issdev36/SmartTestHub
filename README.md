@@ -155,4 +155,4 @@ Your backend should:
 - **EVM**: `.sol` (Solidity smart contracts)
 - **Non-EVM**: `.rs` (Rust smart contracts for Solana)
 
-The system automatically detects the contract type and applies the appropriate testing framework.
+The system automatically detects the contract type and applies the appropriate testing framework
